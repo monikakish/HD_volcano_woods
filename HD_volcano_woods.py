@@ -203,7 +203,7 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
     volcano_fig.write_html(fig_path)
     
 
-def create_woods_plots(merged_data, gst, output_dir="woods_plots"):
+def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_significant_only=False):
     """
     Create and save Woods plots for each time point, showing protein uptake differences.
     
@@ -241,10 +241,21 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots"):
 
         # Add bars for each protein segment’s uptake difference
         for _, row in group.iterrows():
+            # If 'Show only significant differences' is checked, skip non-significant rows
+            if show_significant_only and not row['Significance']:
+                continue
+        
             # Determine color based on significance and difference value
             color = custom_cmap(norm(row['Difference'])) if row['Significance'] else (0.9, 0.9, 0.9)
             hex_color = '#%02x%02x%02x' % (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
-
+            # Set segment details for the hover template
+            segment_start = row['Start']
+            segment_end = row['End']
+            segment_length = segment_end - segment_start
+            segment_name = row['Start-End_y']
+            
+            
+            
             woods_fig.add_trace(go.Bar(
                 x=[row['End'] - row['Start']],  # Protein segment length
                 y=[row['Difference']],          # Difference in uptake
@@ -253,9 +264,11 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots"):
                 opacity=0.7,
                 base=row['Start'],              # Start point of the protein segment
                 width=0.03,                     # Bar width for visual clarity
-                name=row['Start-End_y']         # Label each bar with protein segment information
-            ))
-
+                name=row['Start-End_y'],         # Label each bar with protein segment information
+               customdata=[[segment_start, segment_end]],  # Pass Start and End as custom data
+               hovertemplate="<b>Segment:</b> %{customdata[0]}-%{customdata[1]}<br>" +  # Use customdata for Start and End
+                      "<b>Difference:</b> %{y}<br><extra></extra>"  # Display the Difference in uptake
+                          ))
         # Add heatmap for color scaling
         woods_fig.add_trace(go.Heatmap(
             z=z_data,
@@ -268,15 +281,15 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots"):
         ))
 
         # Define y-axis range with a buffer for clarity in visualization
-        buffer = 0.2
+        buffer = 0.05
         absolute_max = group['Difference'].abs().max()
 
         # Configure y-axis with symmetrical range and buffer
-        woods_fig.update_yaxes(range=[-absolute_max-buffer, absolute_max+buffer], showline=True, linecolor='black', linewidth=2, mirror=True, title_standoff=15)
+        woods_fig.update_yaxes(range=[-max_diff-buffer, max_diff+buffer], showline=True, linecolor='black', linewidth=2, mirror=True, title_standoff=15)
 
         # Add threshold lines for gst regions to highlight significance boundaries
-        woods_fig.add_hline(y=-gst, line=dict(color="rgba(186, 85, 211, 0.2)", width=1))
-        woods_fig.add_hline(y=gst, line=dict(color="rgba(186, 85, 211, 0.2)", width=1))
+        woods_fig.add_hline(y=-gst, line=dict(color="rgba(169, 169, 169, 0.2)", width=1))
+        woods_fig.add_hline(y=gst, line=dict(color="rgba(169, 169, 169, 0.2)", width=1))
         woods_fig.add_hrect(y0=-gst, y1=gst, line_width=0, fillcolor="lightgrey", opacity=0.1)
 
         # Final layout adjustments and axis configuration
@@ -290,7 +303,8 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots"):
             margin=dict(l=40, r=40, t=40, b=40),
             showlegend=False,
             width=1000,  # Set plot width
-            height=400,  # Set plot height
+            height=400,
+            # Set plot height
         )
 
         # Save the figure and record file path
@@ -358,7 +372,12 @@ def main():
             unique_states = data['State'].unique()
             state1 = st.selectbox("Select State 1:", unique_states)
             state2 = st.selectbox("Select State 2:", unique_states)
-
+            
+            
+            # Add a checkbox for showing only significant differences
+            show_significant_only = st.checkbox("Show only significant differences", value=False)
+            
+            
             # Output directory for saving Woods plots
             output_dir = st.text_input("Enter directory to save Woods plots (leave empty for current directory):", "")
 
@@ -372,7 +391,7 @@ def main():
                 merged_data = prepare_merged_data(data, state1, state2, alpha, gst)
                 
                 # Generate Woods plots and store file paths in session state
-                woods_fig_paths = create_woods_plots(merged_data, gst, output_dir)
+                woods_fig_paths = create_woods_plots(merged_data, gst, output_dir, show_significant_only)
                 st.session_state['woods_fig_paths'] = woods_fig_paths
 
                 # Generate and display volcano plot in the right column
