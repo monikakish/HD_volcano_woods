@@ -580,9 +580,14 @@ with left_column:
             ]
             st.session_state['skip_ranges'] = skip_ranges  # Save to session state
         
-        # Output directory for saving Woods plots
-        output_dir = st.text_input("Enter directory to save Woods plots (leave empty for current directory):", "")
-        output_dir = ensure_output_folder_exists(output_dir)  # Ensure the folder exists
+# Allow user to input the directory path
+        output_dir = st.text_input("Enter Output Directory Path (e.g., /path/to/folder):")
+        if output_dir:
+            # Check if the directory exists and create if necessary
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            st.session_state['output_dir'] = output_dir  # Save selected directory to session state
+            st.write(f"Selected output folder: {output_dir}")
 
         # Button to initiate calculations and plot generation
         if st.button("Calculate"):
