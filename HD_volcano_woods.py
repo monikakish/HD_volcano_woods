@@ -10,6 +10,27 @@ from scipy.stats import ttest_ind_from_stats
 from matplotlib.colors import Normalize
 import streamlit as st
 from matplotlib.colors import LinearSegmentedColormap
+from scipy.stats import t
+
+
+# Ensure the folder path is valid and correct for your system
+def normalize_folder_path(path):
+    """Normalize path to work on different OS platforms."""
+    if os.name == 'nt':
+        return os.path.normpath(path)  # For Windows
+    else:
+        return os.path.abspath(path)  # For Unix/Linux/Mac
+
+# Create the output folder if it doesn't exist
+def ensure_output_folder_exists(output_dir):
+    """Ensure the output directory exists, create it if not."""
+    output_dir = normalize_folder_path(output_dir)  # Normalize the path
+    if not os.path.exists(output_dir):  # Check if the directory exists
+        os.makedirs(output_dir)  # Create the directory if it doesn't exist
+    return output_dir
+
+
+
 
 
 
@@ -42,7 +63,7 @@ def calculate_gst(data, state1, state2, alpha, n_replicates=3):
     SEM = np.sqrt((sd_pool ** 2 / n_replicates) * 2)
 
     # Lookup table for t-values corresponding to different alpha levels
-    t_value = {0.1: 1.3, 0.05: 2.1, 0.01: 3.7}.get(alpha, None)  # Lookup based on alpha level
+    t_value = t.ppf(1 - alpha / 2, df=(2 * n_replicates - 2))  # Two-tailed
 
     # Calculate the GST as the product of the t-value and SEM
     CI_result = t_value * SEM
@@ -50,10 +71,90 @@ def calculate_gst(data, state1, state2, alpha, n_replicates=3):
     return round(CI_result, 2)  # Return the GST, rounded to 2 decimal places
 
 
-def prepare_merged_data(data, state1, state2, alpha, gst):
+
+def plot_sd_histogram_plotly(data, state1, state2):
     """
-    Prepare and merge data from two specified states, then calculate the significance 
-    of differences in protein uptake between these states, along with p-values.
+    Plot an interactive histogram of the Uptake SD values for the specified states using Plotly.
+
+    Parameters:
+        data (DataFrame): The dataset containing protein uptake data, including 'Uptake SD' and 'UptakeSD_State_2' columns.
+        state1 (str): Name of the first state for comparison.
+        state2 (str): Name of the second state for comparison.
+    """
+    # Extract Uptake SD for both states from merged_data
+    state1_data = data['Uptake SD']
+    state2_data = data['UptakeSD_State_2']
+
+    # Create the histogram
+    fig = go.Figure()
+
+    # Add histogram for state1 data
+    fig.add_trace(go.Histogram(
+        x=state1_data,
+        nbinsx=20,
+        name=state1,
+        marker=dict(color='skyblue', line=dict(color='black', width=1)),
+        opacity=0.7
+    ))
+
+    # Add histogram for state2 data
+    fig.add_trace(go.Histogram(
+        x=state2_data,
+        nbinsx=20,
+        name=state2,
+        marker=dict(color='lightgreen', line=dict(color='black', width=1)),
+        opacity=0.7
+    ))
+
+    # Update layout for better appearance
+    fig.update_layout(
+        title="Distribution of Uptake SDs",
+        xaxis_title="Uptake SD",
+        yaxis_title="Frequency",
+        template="simple_white",
+        bargap=0.2,  # Space between bars
+        margin=dict(l=40, r=40, t=40, b=40),
+        xaxis=dict(
+            showgrid=True, 
+            gridcolor='lightgrey',
+            showline=True,  # Show x-axis line
+            linecolor='black',  # Set color for the x-axis line
+            linewidth=1,  # Set thickness for the x-axis line
+            mirror=True,  # Show axis line on the other side
+        ),
+        yaxis=dict(
+            showgrid=True, 
+            gridcolor='lightgrey',
+            showline=True,  # Show y-axis line
+            linecolor='black',  # Set color for the y-axis line
+            linewidth=1,  # Set thickness for the y-axis line
+            mirror=True,  # Show axis line on the other side
+            title_standoff=15  # Space between title and axis line
+        ),
+        barmode='overlay',  # Overlay the histograms for comparison
+        
+        # Set the background color to white
+        plot_bgcolor='white',  # Background color of the plot area
+        paper_bgcolor='white', # Background color of the entire figure (including outside the plot area)
+        
+        width=700,
+        height=500,
+    )
+    # Save the plot as an HTML file
+    fig_path = os.path.join(output_dir, "histogram_plot.html")
+    fig.write_html(fig_path)
+    
+    # Show the interactive plot in the Streamlit app
+    st.plotly_chart(fig)
+
+   
+
+
+def prepare_merged_data(data, state1, state2, alpha, gst,output_dir):
+    """
+    Prepare and merge data from two specified states, calculate sum uptake and SD per peptide,
+    and assess the significance of differences in uptake between the two states. 
+    Add summary rows for summed values for each peptide.
 
     Parameters:
         data (DataFrame): Dataset containing protein uptake data, with columns 'State', 'Uptake', and 'Uptake SD'.
@@ -66,13 +167,74 @@ def prepare_merged_data(data, state1, state2, alpha, gst):
         DataFrame: Merged dataset with additional columns for difference, p-value, and significance.
     """
 
-    # Filter data for the selected states and rename columns for clarity
+    # Calculate sum of uptake and uptake SD per peptide
+    sum_stats = data.groupby(['State', 'Sequence']).agg(
+        Sum_Uptake=('Uptake', 'sum'),
+        Sum_Uptake_SD=('Uptake SD', 'sum')
+    ).reset_index()
+
+    # Filter data for each state
     state1_data = data[data['State'] == state1].copy()
     state2_data = data[data['State'] == state2].copy()
+
+    # Initialize final datasets with original rows
+    final_state1 = []
+    final_state2 = []
+
+    # Add sum rows for each peptide in State 1
+    for peptide, group in state1_data.groupby('Sequence', sort=False):
+        final_state1.append(group)
+        sum_values = sum_stats[(sum_stats['State'] == state1) & (sum_stats['Sequence'] == peptide)]
+        sum_row = pd.DataFrame([{
+            'Sequence': peptide,
+            'Start': group['Start'].iloc[0],
+            'End': group['End'].iloc[0],
+            'State': state1,
+            'Exposure': '100000000',
+            'Uptake': sum_values['Sum_Uptake'].values[0],
+            'Uptake SD': sum_values['Sum_Uptake_SD'].values[0],
+            'Start-End': group['Start-End'].iloc[0]
+        }])
+        final_state1.append(sum_row)
+
+    # Add sum rows for each peptide in State 2
+    for peptide, group in state2_data.groupby('Sequence', sort=False):
+        final_state2.append(group)
+        sum_values = sum_stats[(sum_stats['State'] == state2) & (sum_stats['Sequence'] == peptide)]
+        sum_row = pd.DataFrame([{
+            'Sequence': peptide,
+            'Start': group['Start'].iloc[0],
+            'End': group['End'].iloc[0],
+            'State': state2,
+            'Exposure': '100000000',
+            'Uptake': sum_values['Sum_Uptake'].values[0],
+            'Uptake SD': sum_values['Sum_Uptake_SD'].values[0],
+            'Start-End': group['Start-End'].iloc[0]
+        }])
+        final_state2.append(sum_row)
+
+    
+
+    # Combine rows back into full DataFrame for each state
+    state1_data = pd.concat(final_state1, ignore_index=True)
+    state2_data = pd.concat(final_state2, ignore_index=True)
+
+# Combine final_state1 and save for debugging
+    state1_data = pd.concat(final_state1, ignore_index=True)
+    #state1_data.to_csv(os.path.join(output_dir, f"{state1}_final.csv"), index=False)
+
+
+    # Rename summed columns for clarity
     state2_data = state2_data.rename(columns={'Uptake': 'Uptake_State_2', 'Uptake SD': 'UptakeSD_State_2'})
 
     # Merge datasets based on shared columns
-    merged_data = pd.merge(state1_data, state2_data, on=['Sequence', 'Start', 'End', 'Exposure'], how='inner')
+    merged_data = pd.merge(
+    state1_data, state2_data, 
+    on=['Sequence', 'Start', 'End', 'Exposure'], 
+    how='inner'
+)
+
+  
 
     # Calculate the difference in uptake between the two states
     merged_data['Difference'] = merged_data['Uptake'] - merged_data['Uptake_State_2']
@@ -88,12 +250,20 @@ def prepare_merged_data(data, state1, state2, alpha, gst):
     
     # Add p-values to the merged data
     merged_data['p_value'] = p_values
+    valid_p_values = merged_data['p_value'][np.isfinite(merged_data['p_value'])]
+
+    merged_data['-np.log10(valid_p_values)'] = -np.log10(valid_p_values)
 
     # Determine significance based on alpha level and GST threshold
     merged_data['Significance'] = (merged_data['p_value'] < alpha) & \
                                   ((merged_data['Difference'] > gst) | (merged_data['Difference'] < -gst))
+                                  
+        # Export the merged data to a CSV file
+    output_file_path = os.path.join(output_dir, "merged_data_results.csv")
+    merged_data.to_csv(output_file_path, index=False)
 
     return merged_data
+
 
 
 def create_volcano_plot(merged_data, gst, alpha, output_dir):
@@ -110,9 +280,18 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
         None: Displays the plot in Streamlit and saves it as an HTML file.
     """
     
-    # Determine maximum values for the plot range, with buffer for better visibility
+    # Clip p-values to avoid extreme values and ensure realistic y-axis scaling
+    merged_data['p_value'] = merged_data['p_value'].clip(lower=1e-100)
+    
+    # Debugging: Check p-value distribution
+    print("P-value distribution:")
+    print(merged_data['p_value'].describe())
+    
+    # Calculate the maximum y-axis value based on adjusted p-values
     valid_p_values = merged_data['p_value'][np.isfinite(merged_data['p_value'])]
     max_y_value = max(-np.log10(valid_p_values))
+
+    # Calculate x-axis range based on the absolute differences
     max_x_value = max(abs(merged_data['Difference'].min()), abs(merged_data['Difference'].max()))
     buffer1 = max_y_value / 10
     buffer2 = max_x_value / 10
@@ -131,10 +310,10 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
             color = custom_cmap(norm(row['Difference']))
             hex_color = '#%02x%02x%02x' % (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
         else:
-            hex_color = '#E5E5E5'  # Gray color for non-significant points
+            hex_color = '#E5E5E5'  # Gray for non-significant points
         marker_colors.append(hex_color)
 
-    # Scatter plot with markers for each point in merged_data
+    # Scatter plot with markers for each point
     volcano_fig.add_trace(go.Scatter(
         x=merged_data['Difference'],
         y=-np.log10(merged_data['p_value']),
@@ -144,7 +323,7 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
         text=merged_data['Start-End_y'],
     ))
 
-    # Add threshold and cutoff lines for significance and GST thresholds
+    # Add significance and GST threshold lines
     volcano_fig.add_shape(type='line', x0=-max_x_value - buffer2, x1=max_x_value + buffer2,
                           y0=-np.log10(alpha), y1=-np.log10(alpha),
                           line=dict(color='black', dash='dash', width=0.5))
@@ -153,7 +332,7 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
     volcano_fig.add_shape(type='line', x0=-gst, x1=-gst, y0=0, y1=max_y_value + buffer1,
                           line=dict(color='black', dash='dash', width=0.5))
 
-    # Update layout properties for plot appearance
+    # Update plot layout for a clean appearance
     volcano_fig.update_layout(
         title="Volcano Plot",
         xaxis_title="ΔD (Da)",
@@ -161,11 +340,11 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
         margin=dict(l=40, r=40, t=40, b=40),
         plot_bgcolor='white',
         paper_bgcolor='white',
-        width=600,
-        height=400,
+        width=700,
+        height=500,
     )
 
-    # Add shaded rectangles to highlight significance regions
+    # Add shaded rectangles for significant regions
     volcano_fig.add_shape(type='rect',
                           x0=-max_x_value - buffer2, x1=-gst,
                           y0=-np.log10(alpha), y1=max_y_value + buffer1,
@@ -176,31 +355,18 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
                           fillcolor='rgba(255, 182, 193, 0.05)', line=dict(width=0))
 
     # Ensure symmetrical x-axis and adjust axis appearance
-    volcano_fig.update_xaxes(range=[-max_x_value-buffer2, max_x_value+buffer2], showline=True, linecolor='black', linewidth=1, mirror=True)
-    volcano_fig.update_yaxes(range=[-buffer1, max_y_value+buffer1], showline=True, linecolor='black', linewidth=1, mirror=True)
+    volcano_fig.update_xaxes(range=[-max_x_value - buffer2, max_x_value + buffer2], showline=True,
+                             linecolor='black', linewidth=1, mirror=True)
+    volcano_fig.update_yaxes(range=[-buffer1, max_y_value + buffer1], showline=True,
+                             linecolor='black', linewidth=1, mirror=True)
 
-    # Define color scale for the heatmap, centered at 0
-    color_scale = [[0, "blue"], [0.5, 'white'], [1, "red"]]
-    z_data = np.array([merged_data['Difference'].values, merged_data['Difference'].values])
-
-    # Add heatmap trace for color legend and visual effect
-    volcano_fig.add_trace(go.Heatmap(
-        z=z_data,
-        x=merged_data['Start-End_y'],
-        colorscale=color_scale,
-        showscale=True,
-        zmin=-max_x_value,
-        zmax=max_x_value,
-        colorbar=dict(title="ΔD (Da)", titleside='right', len=0.5, thickness=15),
-        visible=True
-    ))
+    # Save the plot as an HTML file
+    fig_path = os.path.join(output_dir, "volcano_plot.html")
+    volcano_fig.write_html(fig_path)
 
     # Display the plot in Streamlit
     st.plotly_chart(volcano_fig)
 
-    # Save the plot as an HTML file in the specified output directory
-    fig_path = os.path.join(output_dir, "volcano_plot.html")
-    volcano_fig.write_html(fig_path)
     
 
 def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_significant_only=False):
@@ -233,12 +399,21 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
         if time_point == 0:
             continue
 
+        # Filter out non-significant rows
+        significant_group = group[group['Significance']]
+    
+        # Skip if no significant data
+        if significant_group.empty:
+            continue
+
+
         # Initialize figure for each time point
         woods_fig = go.Figure()
 
         # Reshape data for the heatmap
         z_data = group['Difference'].values.reshape(1, -1)
-
+        # Calculate the maximum end point for the x-axis range
+        max_end = group['End'].max()
         # Add bars for each protein segment’s uptake difference
         for _, row in group.iterrows():
             # If 'Show only significant differences' is checked, skip non-significant rows
@@ -293,7 +468,7 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
         woods_fig.add_hrect(y0=-gst, y1=gst, line_width=0, fillcolor="lightgrey", opacity=0.1)
 
         # Final layout adjustments and axis configuration
-        woods_fig.update_xaxes(showline=True, linecolor='black', linewidth=2, mirror=True, zeroline=False, zerolinecolor='black', zerolinewidth=2)
+        woods_fig.update_xaxes(range=[0, max_end], showline=True, linecolor='black', linewidth=2, mirror=True, zeroline=False, zerolinecolor='black', zerolinewidth=2)
         woods_fig.update_layout(
             title=f"Woods Plot for Time Point: {time_point}",
             xaxis_title="Protein Sequence",
@@ -302,8 +477,8 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
             paper_bgcolor='white',
             margin=dict(l=40, r=40, t=40, b=40),
             showlegend=False,
-            width=1000,  # Set plot width
-            height=400,
+            width=1500,  # Set plot width
+            height=500,
             # Set plot height
         )
 
@@ -325,103 +500,156 @@ def display_woods_plot(plot_path):
         st.error(f"File {plot_path} not found.")
 
 
-def main():
-    """
-    Streamlit app for peptide data analysis. Allows users to upload data, select parameters,
-    generate volcano and Woods plots, and view results interactively.
-    """
-    
-    # Set the title of the app
-    st.title("Peptide Data Analysis")
 
-    # Apply custom CSS to adjust font size for input fields in the left column
-    st.markdown(
-        """
-        <style>
-        .css-1r7m3o2 { font-size: 10px; }
-        .css-1ht1p4w { font-size: 10px; }
-        .stSelectbox label, .stNumberInput label, .stTextInput label {
-            font-size: 12px !important;
+
+
+
+
+# Set the title of the app
+st.title("Peptide Data Analysis")
+
+# Custom CSS for styling
+st.markdown("""
+    <style>
+        /* Smaller font size for the entire app */
+        body {
+            font-size: 12px;
         }
-        </style>
-        """, 
-        unsafe_allow_html=True
-    )
+        
+        /* Smaller font size for the title */
+        h1, h2, h3, h4, h5, h6 {
+            font-size: 20px;
+        }
+        
+        /* Smaller font size for subheaders */
+        .streamlit-expanderHeader {
+            font-size: 14px;
+        }
+        
+        /* Adjusting button size */
+        .css-1emrehy.edgvbvh3 {
+            font-size: 12px;  /* Decrease font size */
+            padding: 5px 10px;  /* Reduce button padding */
+        }
+        
+        /* Styling all columns to have white background and white outline */
+        div[data-testid="stHorizontalBlock"] > div {
+            background-color: white;  /* Set all columns to white */
+            border: 1px solid #cccccc;  /* Change the border color to white */
+            padding: 10px;  /* Add some padding inside the columns */
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-    # Create two columns with adjusted widths (left for inputs, right for plots)
-    left_column, right_column = st.columns([0.3, 1.7])
+# Create two columns with adjusted widths (left for inputs, right for plots)
+left_column, right_column = st.columns([0.3, 1.7])
 
-    # Left column for input fields
-    with left_column:
-        st.subheader("Input Parameters")
+with left_column:
+    st.markdown('<div class="stVerticalBlock">', unsafe_allow_html=True)
+    st.subheader("Input Parameters")
 
-        # File uploader for CSV input data
-        input_file = st.file_uploader("Upload Data CSV", type=["csv"], key="input_file_uploader")
-        if input_file is not None:
-            # Load data and format 'Start-End' column
-            data = pd.read_csv(input_file)
-            data["Start-End"] = data["Start"].astype(str) + "-" + data["End"].astype(str)
+    # File uploader for CSV input data
+    input_file = st.file_uploader("Upload Data CSV", type=["csv"], key="input_file_uploader")
+    if input_file is not None:
+        # Load data and format 'Start-End' column
+        data = pd.read_csv(input_file)
+        data["Start-End"] = data["Start"].astype(str) + "-" + data["End"].astype(str)
 
-            # Alpha level selection
-            alpha = st.number_input(
-                "Select Alpha Level (e.g., 0.1, 0.05, 0.01):",
-                min_value=0.01, max_value=1.0, value=0.05, step=0.01
-            )
+        # Alpha level selection
+        alpha = st.number_input(
+            "Select Alpha Level (e.g., 0.1, 0.05, 0.01):",
+            min_value=0.01, max_value=1.0, value=0.05, step=0.01
+        )
+        st.session_state['alpha'] = alpha  # Save alpha to session state
+        
+        # State selection for comparison
+        unique_states = data['State'].unique()
+        state1 = st.selectbox("Select State 1:", unique_states)
+        state2 = st.selectbox("Select State 2:", unique_states)
+        
+        # Add a checkbox for showing only significant differences
+        show_significant_only = st.checkbox("Show only significant differences", value=False)
+
+        # Input for peptides to skip
+        peptides_to_skip = st.text_input("Enter peptide ranges to skip (e.g., 23-50; 40-55):", "")
+        if peptides_to_skip:
+            # Parse the input into a list of ranges
+            skip_ranges = [
+                tuple(map(int, range_str.split('-')))
+                for range_str in peptides_to_skip.split(';') if '-' in range_str
+            ]
+            st.session_state['skip_ranges'] = skip_ranges  # Save to session state
+        
+        # Output directory for saving Woods plots
+        output_dir = st.text_input("Enter directory to save Woods plots (leave empty for current directory):", "")
+        output_dir = ensure_output_folder_exists(output_dir)  # Ensure the folder exists
+
+        # Button to initiate calculations and plot generation
+        if st.button("Calculate"):
+            # Exclude skipped peptides from data
+            if peptides_to_skip:
+                for start, end in st.session_state['skip_ranges']:
+                    data = data[~((data['Start'] >= start) & (data['End'] <= end))]
             
-            # State selection for comparison
-            unique_states = data['State'].unique()
-            state1 = st.selectbox("Select State 1:", unique_states)
-            state2 = st.selectbox("Select State 2:", unique_states)
-            
-            
-            # Add a checkbox for showing only significant differences
-            show_significant_only = st.checkbox("Show only significant differences", value=False)
-            
-            
-            # Output directory for saving Woods plots
-            output_dir = st.text_input("Enter directory to save Woods plots (leave empty for current directory):", "")
+            # Calculate GST for the selected states
+            gst = calculate_gst(data, state1, state2, alpha)
+            st.session_state['gst'] = gst  # Save gst to session state
+            st.success(f"Calculated GST for {state1} vs {state2}: {gst}")
 
-            # Button to initiate calculations and plot generation
-            if st.button("Calculate"):
-                # Calculate GST for the selected states
-                gst = calculate_gst(data, state1, state2, alpha)
-                st.success(f"Calculated GST for {state1} vs {state2}: {gst}")
+            # Prepare merged data for plotting
+            merged_data = prepare_merged_data(data, state1, state2, alpha, gst, output_dir)
+            st.session_state['merged_data'] = merged_data
 
-                # Prepare merged data for plotting
-                merged_data = prepare_merged_data(data, state1, state2, alpha, gst)
-                
-                # Generate Woods plots and store file paths in session state
-                woods_fig_paths = create_woods_plots(merged_data, gst, output_dir, show_significant_only)
-                st.session_state['woods_fig_paths'] = woods_fig_paths
-
-                # Generate and display volcano plot in the right column
-                with right_column:
-                    st.subheader("Volcano Plot")
-                    create_volcano_plot(merged_data, gst, alpha, output_dir)
-
-    # Right column for displaying volcano plot (top) and Woods plot viewer (bottom)
-    with right_column:
-        # Check if Woods plot paths are stored in session state
-        if 'woods_fig_paths' in st.session_state:
-            st.subheader("Woods Plot Viewer")
-
-            woods_fig_paths = st.session_state['woods_fig_paths']
-            time_points = range(len(woods_fig_paths))
-
-            # Slider to select time point for Woods plot display
-            selected_time = st.slider(
-                "Select Time Point for Woods Plot",
-                min_value=min(time_points),
-                max_value=max(time_points),
-                step=1
-            )
-            
-            # Display the selected Woods plot
-            display_woods_plot(woods_fig_paths[selected_time])
-
-# Run the app
-if __name__ == "__main__":
-    main()
+            # Generate Woods plots and store file paths in session state
+            woods_fig_paths = create_woods_plots(merged_data, gst, output_dir, show_significant_only)
+            st.session_state['woods_fig_paths'] = woods_fig_paths
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
+# Top row: Volcano Plot and Uptake SD Histogram
+volcano_col, histogram_col = st.columns([1, 1])
 
+with volcano_col:
+    st.subheader("Volcano Plot")
+    if 'merged_data' in st.session_state and 'gst' in st.session_state and 'alpha' in st.session_state:
+        create_volcano_plot(
+            merged_data=st.session_state['merged_data'], 
+            gst=st.session_state['gst'], 
+            alpha=st.session_state['alpha'], 
+            output_dir=st.session_state.get('output_dir', "")
+        )
+    else:
+        st.info("Upload data and calculate GST to view the Volcano Plot.")
+
+with histogram_col:
+    st.subheader("Uptake SD Histogram")
+    if 'merged_data' in st.session_state:
+        plot_sd_histogram_plotly(
+            data=st.session_state['merged_data'], 
+            state1=state1, 
+            state2=state2
+        )
+    else:
+        st.info("Upload data and calculate GST to view the Histogram.")
+
+# Second row: Woods Plot Viewer in the right column
+with right_column:
+    st.subheader("Woods Plot Viewer")
+    st.markdown('<div class="stVerticalBlock">', unsafe_allow_html=True)
+    if 'woods_fig_paths' in st.session_state:
+        woods_fig_paths = st.session_state['woods_fig_paths']
+        time_points = range(len(woods_fig_paths))
+
+        selected_time = st.slider(
+            "Select Time Point for Woods Plot",
+            min_value=min(time_points),
+            max_value=max(time_points),
+            step=1,
+            key="woods_plot_slider"
+        )
+
+        display_woods_plot(woods_fig_paths[selected_time])
+    else:
+        st.info("Upload data and generate Woods plots to view them.")
+    st.markdown('</div>', unsafe_allow_html=True)
