@@ -11,24 +11,8 @@ from matplotlib.colors import Normalize
 import streamlit as st
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.stats import t
-
-
-# Ensure the folder path is valid and correct for your system
-def normalize_folder_path(path):
-    """Normalize path to work on different OS platforms."""
-    if os.name == 'nt':
-        return os.path.normpath(path)  # For Windows
-    else:
-        return os.path.abspath(path)  # For Unix/Linux/Mac
-
-# Create the output folder if it doesn't exist
-def ensure_output_folder_exists(output_dir):
-    """Ensure the output directory exists, create it if not."""
-    output_dir = normalize_folder_path(output_dir)  # Normalize the path
-    if not os.path.exists(output_dir):  # Check if the directory exists
-        os.makedirs(output_dir)  # Create the directory if it doesn't exist
-    return output_dir
-
+import zipfile
+import io
 
 
 
@@ -140,17 +124,22 @@ def plot_sd_histogram_plotly(data, state1, state2):
         width=700,
         height=500,
     )
-    # Save the plot as an HTML file
-    fig_path = os.path.join(output_dir, "histogram_plot.html")
-    fig.write_html(fig_path)
+ 
     
     # Show the interactive plot in the Streamlit app
     st.plotly_chart(fig)
 
-   
+    # Prepare the HTML content for download
+    html_data = fig.to_html(full_html=False)
+    st.download_button(
+        label="Download Histogram Plot (HTML)",
+        data=html_data,
+        file_name="histogram_plot.html",
+        mime="text/html"
+    )
 
 
-def prepare_merged_data(data, state1, state2, alpha, gst,output_dir):
+def prepare_merged_data(data, state1, state2, alpha, gst):
     """
     Prepare and merge data from two specified states, calculate sum uptake and SD per peptide,
     and assess the significance of differences in uptake between the two states. 
@@ -258,15 +247,24 @@ def prepare_merged_data(data, state1, state2, alpha, gst,output_dir):
     merged_data['Significance'] = (merged_data['p_value'] < alpha) & \
                                   ((merged_data['Difference'] > gst) | (merged_data['Difference'] < -gst))
                                   
-        # Export the merged data to a CSV file
-    output_file_path = os.path.join(output_dir, "merged_data_results.csv")
-    merged_data.to_csv(output_file_path, index=False)
+    # Add a button for downloading merged data as CSV
+    if 'merged_data' in st.session_state:
+        merged_data = st.session_state['merged_data']
+        
+        # Convert merged data to CSV format
+        csv_data = merged_data.to_csv(index=False)
+        st.download_button(
+            label="Download Merged Data (CSV)",
+            data=csv_data,
+            file_name="merged_data.csv",
+            mime="text/csv"
+        )
 
     return merged_data
 
 
 
-def create_volcano_plot(merged_data, gst, alpha, output_dir):
+def create_volcano_plot(merged_data, gst, alpha):
     """
     Create and display a volcano plot to show differences in protein uptake and significance levels.
     
@@ -274,7 +272,7 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
         merged_data (DataFrame): Data containing 'Difference' and 'p_value' columns for plotting.
         gst (float): Global significance threshold for assessing the magnitude of differences.
         alpha (float): Significance level for determining p-value cutoff (e.g., 0.05).
-        output_dir (str): Directory to save the volcano plot as an HTML file.
+        
 
     Returns:
         None: Displays the plot in Streamlit and saves it as an HTML file.
@@ -360,31 +358,36 @@ def create_volcano_plot(merged_data, gst, alpha, output_dir):
     volcano_fig.update_yaxes(range=[-buffer1, max_y_value + buffer1], showline=True,
                              linecolor='black', linewidth=1, mirror=True)
 
-    # Save the plot as an HTML file
-    fig_path = os.path.join(output_dir, "volcano_plot.html")
-    volcano_fig.write_html(fig_path)
-
+    
     # Display the plot in Streamlit
     st.plotly_chart(volcano_fig)
+# Convert the figure to HTML
+    html_data = volcano_fig.to_html(full_html=False)
+
+    # Add a download button for the volcano plot (HTML)
+    st.download_button(
+        label="Download Volcano Plot (HTML)",
+        data=html_data,
+        file_name="volcano_plot.html",
+        mime="text/html")
 
     
 
-def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_significant_only=False):
+
+
+def create_woods_plots(merged_data, gst, show_significant_only=False):
     """
-    Create and save Woods plots for each time point, showing protein uptake differences.
+    Create and display Woods plots for each time point, showing protein uptake differences.
     
     Parameters:
         merged_data (DataFrame): Data containing 'Difference' and 'Significance' columns for plotting.
         gst (float): Global significance threshold for evaluating the magnitude of differences.
-        output_dir (str): Directory to save the Woods plot HTML files.
+        show_significant_only (bool): If True, only significant differences will be shown.
     
     Returns:
-        fig_paths (list): List of file paths to saved Woods plots.
+        fig_paths (list): List of file paths for the Woods plots.
     """
-    
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-
+  
     # Set normalization based on the range of differences
     max_diff = max(abs(merged_data['Difference'].min()), abs(merged_data['Difference'].max()))
     norm = Normalize(vmin=-max_diff, vmax=max_diff)
@@ -406,15 +409,13 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
         if significant_group.empty:
             continue
 
-
         # Initialize figure for each time point
         woods_fig = go.Figure()
 
         # Reshape data for the heatmap
         z_data = group['Difference'].values.reshape(1, -1)
-        # Calculate the maximum end point for the x-axis range
-        max_end = group['End'].max()
-        # Add bars for each protein segment’s uptake difference
+        max_end = group['End'].max()  # Maximum endpoint for x-axis range
+
         for _, row in group.iterrows():
             # If 'Show only significant differences' is checked, skip non-significant rows
             if show_significant_only and not row['Significance']:
@@ -423,13 +424,8 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
             # Determine color based on significance and difference value
             color = custom_cmap(norm(row['Difference'])) if row['Significance'] else (0.9, 0.9, 0.9)
             hex_color = '#%02x%02x%02x' % (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
-            # Set segment details for the hover template
             segment_start = row['Start']
             segment_end = row['End']
-            segment_length = segment_end - segment_start
-            segment_name = row['Start-End_y']
-            
-            
             
             woods_fig.add_trace(go.Bar(
                 x=[row['End'] - row['Start']],  # Protein segment length
@@ -441,9 +437,10 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
                 width=0.03,                     # Bar width for visual clarity
                 name=row['Start-End_y'],         # Label each bar with protein segment information
                customdata=[[segment_start, segment_end]],  # Pass Start and End as custom data
-               hovertemplate="<b>Segment:</b> %{customdata[0]}-%{customdata[1]}<br>" +  # Use customdata for Start and End
-                      "<b>Difference:</b> %{y}<br><extra></extra>"  # Display the Difference in uptake
-                          ))
+               hovertemplate="<b>Segment:</b> %{customdata[0]}-%{customdata[1]}<br>" +
+                             "<b>Difference:</b> %{y}<br><extra></extra>"
+            ))
+
         # Add heatmap for color scaling
         woods_fig.add_trace(go.Heatmap(
             z=z_data,
@@ -455,20 +452,14 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
             zmax=max_diff
         ))
 
-        # Define y-axis range with a buffer for clarity in visualization
-        buffer = 0.05
-        absolute_max = group['Difference'].abs().max()
-
-        # Configure y-axis with symmetrical range and buffer
-        woods_fig.update_yaxes(range=[-max_diff-buffer, max_diff+buffer], showline=True, linecolor='black', linewidth=2, mirror=True, title_standoff=15)
-
-        # Add threshold lines for gst regions to highlight significance boundaries
+        # Configure y-axis and add threshold lines
+        woods_fig.update_yaxes(range=[-max_diff-0.05, max_diff+0.05], showline=True, linecolor='black', linewidth=2, mirror=True)
         woods_fig.add_hline(y=-gst, line=dict(color="rgba(169, 169, 169, 0.2)", width=1))
         woods_fig.add_hline(y=gst, line=dict(color="rgba(169, 169, 169, 0.2)", width=1))
         woods_fig.add_hrect(y0=-gst, y1=gst, line_width=0, fillcolor="lightgrey", opacity=0.1)
 
-        # Final layout adjustments and axis configuration
-        woods_fig.update_xaxes(range=[0, max_end], showline=True, linecolor='black', linewidth=2, mirror=True, zeroline=False, zerolinecolor='black', zerolinewidth=2)
+        # Final layout adjustments
+        woods_fig.update_xaxes(range=[0, max_end], showline=True, linecolor='black', linewidth=2, mirror=True)
         woods_fig.update_layout(
             title=f"Woods Plot for Time Point: {time_point}",
             xaxis_title="Protein Sequence",
@@ -477,30 +468,46 @@ def create_woods_plots(merged_data, gst, output_dir="woods_plots", show_signific
             paper_bgcolor='white',
             margin=dict(l=40, r=40, t=40, b=40),
             showlegend=False,
-            width=1500,  # Set plot width
+            width=1500,
             height=500,
-            # Set plot height
         )
+        # Save the plot to a buffer in memory
+        buffer = io.StringIO()
+        woods_fig.write_html(buffer)
+        buffer.seek(0)
+        fig_paths.append((time_point, buffer))
 
-        # Save the figure and record file path
-        fig_path = os.path.join(output_dir, f"woods_plot_{time_point}.html")
-        woods_fig.write_html(fig_path)
-        fig_paths.append(fig_path)
+    # Create a zip file containing all the HTML plots
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for time_point, fig_buffer in fig_paths:
+            zip_file.writestr(f"woods_plot_{time_point}.html", fig_buffer.getvalue())
+    
+    zip_buffer.seek(0)
 
-    return fig_paths  # Return the list of saved file paths
+    # Add a download button for the zip file
+    st.download_button(
+        label="Download All Woods Plots (ZIP)",
+        data=zip_buffer,
+        file_name="woods_plots.zip",
+        mime="application/zip"
+    )
 
+    return fig_paths
 
-def display_woods_plot(plot_path):
-    """Display a Woods plot HTML file."""
+def display_woods_plot(plot_tuple):
+    """Display a Woods plot from a buffer."""
     try:
-        with open(plot_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
+        # Extract the buffer from the tuple
+        _, plot_buffer = plot_tuple
+        
+        # Get the HTML content from the buffer
+        html_content = plot_buffer.getvalue()
+        
+        # Display the HTML content
         st.components.v1.html(html_content, height=600, scrolling=True)
-    except FileNotFoundError:
-        st.error(f"File {plot_path} not found.")
-
-
-
+    except Exception as e:
+        st.error(f"Error displaying plot: {e}")
 
 
 
@@ -580,14 +587,7 @@ with left_column:
             ]
             st.session_state['skip_ranges'] = skip_ranges  # Save to session state
         
-# Allow user to input the directory path
-        output_dir = st.text_input("Enter Output Directory Path (e.g., /path/to/folder):")
-        if output_dir:
-            # Check if the directory exists and create if necessary
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            st.session_state['output_dir'] = output_dir  # Save selected directory to session state
-            st.write(f"Selected output folder: {output_dir}")
+
 
         # Button to initiate calculations and plot generation
         if st.button("Calculate"):
@@ -602,11 +602,12 @@ with left_column:
             st.success(f"Calculated GST for {state1} vs {state2}: {gst}")
 
             # Prepare merged data for plotting
-            merged_data = prepare_merged_data(data, state1, state2, alpha, gst, output_dir)
+            merged_data = prepare_merged_data(data, state1, state2, alpha, gst)
             st.session_state['merged_data'] = merged_data
 
             # Generate Woods plots and store file paths in session state
-            woods_fig_paths = create_woods_plots(merged_data, gst, output_dir, show_significant_only)
+
+            woods_fig_paths = create_woods_plots(merged_data, gst, show_significant_only=show_significant_only)
             st.session_state['woods_fig_paths'] = woods_fig_paths
     
     st.markdown('</div>', unsafe_allow_html=True)
@@ -621,9 +622,9 @@ with volcano_col:
         create_volcano_plot(
             merged_data=st.session_state['merged_data'], 
             gst=st.session_state['gst'], 
-            alpha=st.session_state['alpha'], 
-            output_dir=st.session_state.get('output_dir', "")
-        )
+            alpha=st.session_state['alpha'] 
+            )
+        
     else:
         st.info("Upload data and calculate GST to view the Volcano Plot.")
 
