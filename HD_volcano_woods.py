@@ -140,19 +140,12 @@ def plot_sd_histogram_plotly(data, state1, state2):
         width=700,
         height=500,
     )
-       # Save the plot as an HTML file
+    # Save the plot as an HTML file
     fig_path = os.path.join(output_dir, "histogram_plot.html")
+    fig.write_html(fig_path)
     
-    # Debugging statement to show the file path
-    st.write(f"Debug: Attempting to save plot to {fig_path}")
-    
-    try:
-        fig.write_html(fig_path)
-        st.success(f"Plot saved successfully at {fig_path}")
-    except Exception as e:
-        st.error(f"Error saving plot: {e}")
-        st.write("Debug: Saving failed. Check permissions or path validity.")
-
+    # Show the interactive plot in the Streamlit app
+    st.plotly_chart(fig)
 
    
 
