@@ -202,28 +202,19 @@ def prepare_merged_data(data, state1, state2, alpha, gst):
         }])
         final_state2.append(sum_row)
 
-    
-
     # Combine rows back into full DataFrame for each state
     state1_data = pd.concat(final_state1, ignore_index=True)
     state2_data = pd.concat(final_state2, ignore_index=True)
-
-# Combine final_state1 and save for debugging
-    state1_data = pd.concat(final_state1, ignore_index=True)
-    #state1_data.to_csv(os.path.join(output_dir, f"{state1}_final.csv"), index=False)
-
 
     # Rename summed columns for clarity
     state2_data = state2_data.rename(columns={'Uptake': 'Uptake_State_2', 'Uptake SD': 'UptakeSD_State_2'})
 
     # Merge datasets based on shared columns
     merged_data = pd.merge(
-    state1_data, state2_data, 
-    on=['Sequence', 'Start', 'End', 'Exposure'], 
-    how='inner'
-)
-
-  
+        state1_data, state2_data, 
+        on=['Sequence', 'Start', 'End', 'Exposure'], 
+        how='inner'
+    )
 
     # Calculate the difference in uptake between the two states
     merged_data['Difference'] = merged_data['Uptake'] - merged_data['Uptake_State_2']
@@ -246,7 +237,10 @@ def prepare_merged_data(data, state1, state2, alpha, gst):
     # Determine significance based on alpha level and GST threshold
     merged_data['Significance'] = (merged_data['p_value'] < alpha) & \
                                   ((merged_data['Difference'] > gst) | (merged_data['Difference'] < -gst))
-                                  
+
+    # Save merged data to session state
+    st.session_state['merged_data'] = merged_data
+
     # Add a button for downloading merged data as CSV
     if 'merged_data' in st.session_state:
         merged_data = st.session_state['merged_data']
@@ -261,6 +255,7 @@ def prepare_merged_data(data, state1, state2, alpha, gst):
         )
 
     return merged_data
+
 
 
 
@@ -370,9 +365,6 @@ def create_volcano_plot(merged_data, gst, alpha):
         data=html_data,
         file_name="volcano_plot.html",
         mime="text/html")
-
-    
-
 
 
 def create_woods_plots(merged_data, gst, show_significant_only=False):
@@ -577,33 +569,45 @@ with left_column:
         # Add a checkbox for showing only significant differences
         show_significant_only = st.checkbox("Show only significant differences", value=False)
 
-        # Input for peptides to skip
-        peptides_to_skip = st.text_input("Enter peptide ranges to skip (e.g., 23-50; 40-55):", "")
+        # Input for specific peptides to skip (semicolon-separated Start-End pairs)
+        peptides_to_skip = st.text_input("Enter peptide Start-End pairs to skip (e.g., 9-38;111-114):", "")
         if peptides_to_skip:
-            # Parse the input into a list of ranges
-            skip_ranges = [
-                tuple(map(int, range_str.split('-')))
-                for range_str in peptides_to_skip.split(';') if '-' in range_str
+            # Parse the input into a list of tuples (Start, End), split by semicolon
+            skip_peptides = [
+                tuple(map(int, pair.split('-')))
+                for pair in peptides_to_skip.split(';') if '-' in pair
             ]
-            st.session_state['skip_ranges'] = skip_ranges  # Save to session state
+            st.session_state['skip_peptides'] = skip_peptides  # Save to session state
         
-
-
-        # Button to initiate calculations and plot generation
+        
+        
         if st.button("Calculate"):
-            # Exclude skipped peptides from data
+            # Filtering peptides based on exact Start-End pairs
             if peptides_to_skip:
-                for start, end in st.session_state['skip_ranges']:
-                    data = data[~((data['Start'] >= start) & (data['End'] <= end))]
-            
-            # Calculate GST for the selected states
-            gst = calculate_gst(data, state1, state2, alpha)
-            st.session_state['gst'] = gst  # Save gst to session state
-            st.success(f"Calculated GST for {state1} vs {state2}: {gst}")
+                for start, end in st.session_state['skip_peptides']:
+                    
+                    
+                    # Exclude data where both 'Start' and 'End' exactly match any specified pair
+                    data = data[~((data['Start'] == start) & (data['End'] == end))]
+        
+            # Save the filtered data to session state
+            st.session_state['filtered_data'] = data
+           
 
-            # Prepare merged data for plotting
+            
+            
+            # Calculate GST and prepare merged data
+            gst = calculate_gst(data, state1, state2, alpha)
+            st.session_state['gst'] = gst
+            st.success(f"Calculated GST for {state1} vs {state2}: {gst}")
+        
             merged_data = prepare_merged_data(data, state1, state2, alpha, gst)
             st.session_state['merged_data'] = merged_data
+            st.session_state['alpha'] = alpha  # Store alpha level
+
+
+            
+
 
             # Generate Woods plots and store file paths in session state
 
