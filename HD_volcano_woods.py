@@ -439,7 +439,7 @@ def create_woods_plots(merged_data, gst, show_significant_only=False):
             x=group['Start-End_y'],
             colorscale=color_scale,
             showscale=True,
-            colorbar=dict(title="ΔD (Da)", titleside='right', len=0.5, thickness=15),
+            colorbar=dict(title="ΔD (Da)", len=0.5, thickness=15),
             zmin=-max_diff,
             zmax=max_diff
         ))
