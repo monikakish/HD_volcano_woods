@@ -439,10 +439,17 @@ def create_woods_plots(merged_data, gst, show_significant_only=False):
             x=group['Start-End_y'],
             colorscale=color_scale,
             showscale=True,
-            colorbar=dict(title="ΔD (Da)", len=0.5, thickness=15),
+            colorbar=dict(
+                title="ΔD (Da)",
+                thickness=15,
+                len=0.5,
+                tickvals=[-max_diff, 0, max_diff],
+                ticktext=[f"-{max_diff:.1f}", "0", f"{max_diff:.1f}"]
+            ),
             zmin=-max_diff,
             zmax=max_diff
         ))
+
 
         # Configure y-axis and add threshold lines
         woods_fig.update_yaxes(range=[-max_diff-0.05, max_diff+0.05], showline=True, linecolor='black', linewidth=2, mirror=True)
